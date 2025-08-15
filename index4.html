@@ -1,0 +1,402 @@
+// not the final version but with more funtianality
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Mindmap To-Do List</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #1e1e1e;
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+            transition: background 0.3s;
+        }
+        h2 { color: #ffcc00; margin-bottom: 20px; }
+        .container { width: 100%; height: 80vh; position: relative; }
+        .node circle {
+            fill: #3498db;
+            stroke: #2980b9;
+            stroke-width: 2px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .node.done circle { fill: #2ecc71 !important; }
+        .node text { font-size: 14px; fill: #fff; cursor: pointer; }
+        .link { fill: none; stroke: #666; stroke-width: 2px; }
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        button {
+            background: #ffcc00;
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: transform 0.2s;
+        }
+        button:hover { transform: scale(1.05); }
+        .popup {
+            position: absolute;
+            background: #333;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            min-width: 180px;
+            z-index: 1000;
+        }
+        .priority-high { stroke: #e74c3c !important; }
+        .priority-medium { stroke: #f1c40f !important; }
+        .priority-low { stroke: #2ecc71 !important; }
+        .progress-text { font-size: 10px; fill: #888; }
+        .dark-mode { background: #111; color: #ddd; }
+        .search-box { padding: 8px; border-radius: 4px; border: 1px solid #444; background: #333; color: #fff; }
+        .emoji-input { width: 60px; }
+        .node.editing circle {
+            stroke: #ffcc00;
+            stroke-width: 3px;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { stroke-width: 3px; }
+            50% { stroke-width: 5px; }
+            100% { stroke-width: 3px; }
+        }
+        .edit-input {
+            position: absolute;
+            background: transparent;
+            border: none;
+            color: white;
+            font-size: 14px;
+            text-align: center;
+            width: 120px;
+            transform: translate(-60px, -35px);
+        }
+    </style>
+</head>
+<body onclick="hidePopup()">
+    <h2>Advanced Mindmap To-Do List</h2>
+    <div class="controls">
+        <input type="text" id="search" class="search-box" placeholder="Search tasks..." oninput="filterTasks(this.value)">
+        <button onclick="addTask(null)">➕ Add Task</button>
+        <button onclick="toggleDarkMode()">🌓 Toggle Theme</button>
+        <button onclick="undo()">↩️ Undo</button>
+        <button onclick="redo()">↪️ Redo</button>
+        <button onclick="exportJSON()">📤 Export</button>
+        <input type="file" id="importFile" hidden onchange="importJSON(event)">
+        <button onclick="document.getElementById('importFile').click()">📥 Import</button>
+    </div>
+    <div class="container">
+        <svg width="100%" height="100%">
+            <g transform="translate(0,0)"></g>
+        </svg>
+    </div>
+    <div id="popup" class="popup"></div>
+
+<script>
+let treeData = JSON.parse(localStorage.getItem("mindmapData")) || { name: "Main Task", children: [] };
+let undoStack = [];
+let redoStack = [];
+let selectedNode = null;
+const svg = d3.select("svg");
+const g = svg.select("g");
+const zoom = d3.zoom().scaleExtent([0.1, 5]).on("zoom", e => g.attr("transform", e.transform));
+svg.call(zoom).on("dblclick.zoom", null);
+
+const treeLayout = d3.tree().nodeSize([120, 80]);
+let root;
+
+function update() {
+    saveState();
+    root = d3.hierarchy(treeData, d => d.collapsed ? null : d.children);
+    treeLayout(root);
+    
+    // Update nodes
+    const nodes = g.selectAll(".node")
+        .data(root.descendants(), d => d.data.name);
+    
+    // Enter new nodes
+    const nodeEnter = nodes.enter().append("g")
+        .attr("class", d => `node ${d.data.done ? 'done' : ''}`)
+        .attr("transform", d => `translate(${d.x},${d.y})`)
+        .on("click", (e, d) => selectNode(d))
+        .on("contextmenu", (e, d) => showContextMenu(e, d));
+
+    nodeEnter.append("circle")
+        .attr("r", 15)
+        .style("fill", d => d.data.color || "#3498db")
+        .style("stroke", d => getPriorityColor(d.data.priority));
+
+    nodeEnter.append("text")
+        .attr("dy", -20)
+        .text(d => `${d.data.emoji || ''} ${d.data.name}`);
+
+    nodeEnter.append("text")
+        .attr("dy", 20)
+        .attr("class", "progress-text")
+        .text(d => getProgressText(d));
+
+    // Update existing nodes
+    nodes.merge(nodeEnter)
+        .transition().duration(300)
+        .attr("transform", d => `translate(${d.x},${d.y})`);
+
+    nodes.select("circle")
+        .style("fill", d => d.data.color || "#3498db")
+        .style("stroke", d => getPriorityColor(d.data.priority));
+
+    nodes.select("text:nth-child(2)")
+        .text(d => `${d.data.emoji || ''} ${d.data.name}`);
+
+    nodes.select(".progress-text")
+        .text(d => getProgressText(d));
+
+    // Remove old nodes
+    nodes.exit().remove();
+
+    // Update links
+    const links = g.selectAll(".link").data(root.links());
+    links.enter().append("path").attr("class", "link")
+        .merge(links)
+        .attr("d", d3.linkVertical()
+            .x(d => d.x)
+            .y(d => d.y));
+    links.exit().remove();
+
+    localStorage.setItem("mindmapData", JSON.stringify(treeData));
+}
+
+function getPriorityColor(priority) {
+    return {
+        high: '#e74c3c',
+        medium: '#f1c40f',
+        low: '#2ecc71'
+    }[priority] || '#2980b9';
+}
+
+function getProgressText(d) {
+    if (!d.children) return '';
+    const done = d.children.filter(c => c.data.done).length;
+    return `${Math.round((done / d.children.length) * 100)}% done`;
+}
+
+function showContextMenu(e, d) {
+    e.preventDefault();
+    e.stopPropagation();
+    selectedNode = d.data.name;
+    const popup = document.getElementById("popup");
+    popup.innerHTML = `
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+            <button onclick="event.stopPropagation(); editTask('${d.data.name}')">✏️ Edit</button>
+            <input type="color" value="${d.data.color || '#3498db'}" 
+                onchange="changeColor('${d.data.name}', this.value); event.stopPropagation()">
+            <select onchange="setPriority('${d.data.name}', this.value); event.stopPropagation()">
+                <option value="">Priority</option>
+                <option ${d.data.priority === 'high' ? 'selected' : ''} value="high">High</option>
+                <option ${d.data.priority === 'medium' ? 'selected' : ''} value="medium">Medium</option>
+                <option ${d.data.priority === 'low' ? 'selected' : ''} value="low">Low</option>
+            </select>
+            <input type="date" value="${d.data.deadline || ''}" 
+                onchange="setDeadline('${d.data.name}', this.value); event.stopPropagation()">
+            <input type="text" class="emoji-input" placeholder="😊" 
+                value="${d.data.emoji || ''}" 
+                onchange="setEmoji('${d.data.name}', this.value); event.stopPropagation()">
+            <button onclick="event.stopPropagation(); addTask('${d.data.name}')">➕ Add Child</button>
+            <button onclick="event.stopPropagation(); toggleCollapse('${d.data.name}')">🔄 Toggle Expand</button>
+            <button onclick="event.stopPropagation(); markDone('${d.data.name}')">✅ Toggle Done</button>
+            <button onclick="event.stopPropagation(); deleteTask('${d.data.name}')">🗑️ Delete</button>
+        </div>
+    `;
+    popup.style.display = 'flex';
+    popup.style.left = `${e.pageX}px`;
+    popup.style.top = `${e.pageY}px`;
+}
+
+function selectNode(d) {
+    selectedNode = d.data.name;
+    d3.selectAll(".node").classed("selected", false);
+    d3.select(d3.event.target).classed("selected", true);
+}
+
+function addTask(parentName) {
+    const taskName = prompt("Enter task name:");
+    if (!taskName) return;
+    
+    const newTask = { name: taskName, children: [] };
+    if (!parentName) {
+        treeData.children.push(newTask);
+    } else {
+        findNode(treeData, parentName).children.push(newTask);
+    }
+    update();
+}
+
+function editTask(name) {
+    const node = findNode(treeData, name);
+    const input = document.createElement('input');
+    input.className = 'edit-input';
+    input.value = name;
+    
+    const popup = document.getElementById('popup');
+    popup.appendChild(input);
+    input.focus();
+    
+    input.addEventListener('blur', finishEdit);
+    input.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') finishEdit();
+    });
+
+    function finishEdit() {
+        if (input.value.trim() && input.value !== name) {
+            node.name = input.value.trim();
+            update();
+        }
+        input.remove();
+        hidePopup();
+    }
+}
+
+function deleteTask(name) {
+    if (confirm("Delete this task and all subtasks?")) {
+        removeNode(treeData, name);
+        update();
+    }
+}
+
+function markDone(name) {
+    const node = findNode(treeData, name);
+    node.done = !node.done;
+    if (node.done) {
+        node.color = '#2ecc71';
+    } else {
+        node.color = node.priority ? getPriorityColor(node.priority) : '#3498db';
+    }
+    update();
+}
+
+function toggleCollapse(name) {
+    toggleProperty(name, 'collapsed');
+}
+
+function toggleProperty(name, prop) {
+    const node = findNode(treeData, name);
+    node[prop] = !node[prop];
+    update();
+}
+
+function findNode(root, name) {
+    if (root.name === name) return root;
+    if (root.children) {
+        for (const child of root.children) {
+            const found = findNode(child, name);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+function removeNode(root, name) {
+    if (root.children) {
+        root.children = root.children.filter(child => {
+            if (child.name === name) return false;
+            removeNode(child, name);
+            return true;
+        });
+    }
+}
+
+function saveState() {
+    undoStack.push(JSON.stringify(treeData));
+    redoStack = [];
+}
+
+function undo() {
+    if (undoStack.length > 0) {
+        redoStack.push(JSON.stringify(treeData));
+        treeData = JSON.parse(undoStack.pop());
+        update();
+    }
+}
+
+function redo() {
+    if (redoStack.length > 0) {
+        undoStack.push(JSON.stringify(treeData));
+        treeData = JSON.parse(redoStack.pop());
+        update();
+    }
+}
+
+function filterTasks(query) {
+    g.selectAll(".node").attr("opacity", d => 
+        d.data.name.toLowerCase().includes(query.toLowerCase()) ? 1 : 0.3
+    );
+}
+
+function changeColor(name, color) {
+    findNode(treeData, name).color = color;
+    update();
+}
+
+function setPriority(name, priority) {
+    findNode(treeData, name).priority = priority;
+    update();
+}
+
+function setDeadline(name, deadline) {
+    findNode(treeData, name).deadline = deadline;
+    update();
+}
+
+function setEmoji(name, emoji) {
+    findNode(treeData, name).emoji = emoji;
+    update();
+}
+
+function exportJSON() {
+    const data = JSON.stringify(treeData);
+    const blob = new Blob([data], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mindmap.json';
+    a.click();
+}
+
+function importJSON(e) {
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+        treeData = JSON.parse(reader.result);
+        update();
+    };
+    reader.readAsText(file);
+}
+
+function toggleDarkMode() {
+    document.body.classList.toggle('dark-mode');
+}
+
+function hidePopup() {
+    document.getElementById('popup').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => {
+    if (e.ctrlKey && e.key === 'z') undo();
+    if (e.ctrlKey && e.key === 'y') redo();
+    if (e.key === 'Delete' && selectedNode) deleteTask(selectedNode);
+});
+
+update();
+</script>
+</body>
+</html>
